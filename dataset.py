@@ -27,10 +27,14 @@ class BuildDataset(torch.utils.data.Dataset):
         with h5py.File(mask_path, 'r') as file:
             self.masks = file[list(file.keys())[0]][:]
             
-        print(self.masks.shape)
             
         self.bboxes = np.load(bbox_path, allow_pickle=True)
         self.labels = np.load(label_path, allow_pickle=True)
+        
+        print(len(self.masks), len(self.images), len(self.bboxes), len(self.labels))
+        print(self.masks.shape, self.images.shape, self.bboxes[0].shape, self.labels[0].shape)
+        print(self.labels[0])
+
         
         
 
@@ -48,6 +52,8 @@ class BuildDataset(torch.utils.data.Dataset):
         # check flag
         # print(self.images.shape)
         img = self.images[index]
+        mask = self.masks[index]
+        bbox = self.bboxes[index]
 
     
         tensor = torch.tensor(img)
@@ -67,6 +73,7 @@ class BuildDataset(torch.utils.data.Dataset):
 
         # print(list(tensor.shape))
         assert list(tensor.shape) == [3, 800, 1088]
+        
         print(self.bboxes[0].shape, self.masks[0].shape)
         assert self.bboxes[index].shape[0] == self.masks[index].shape[0]
         
