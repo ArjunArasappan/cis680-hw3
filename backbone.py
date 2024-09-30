@@ -8,7 +8,7 @@ def Resnet50Backbone(checkpoint_file=None, device="cpu", eval=True):
     if eval == True:
         model.eval()
 
-    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     resnet50_fpn = model.backbone

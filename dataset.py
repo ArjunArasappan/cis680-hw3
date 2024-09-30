@@ -9,9 +9,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
+import os
+
 class BuildDataset(torch.utils.data.Dataset):
-    def __init__(self, path):
+    def __init__(self, paths):
         # TODO: load dataset, make mask list
+
+        img_path, mask_path, label_path , bbox_path= paths
+
+        # print("Current working directory:", os.getcwd())
+        # print("Files in data directory:", os.listdir(data_root))
+
+        # load shit
+        with h5py.File(img_path, 'r') as file:
+            self.images = file[list(file.keys())[0]][:]
+
+        with h5py.File(mask_path, 'r') as file:
+            self.masks = file[list(file.keys())[0]][:]
+            
+        self.bboxes = np.load(bbox_path, allow_pickle=True)
+        self.labels = np.load(label_path, allow_pickle=True)
+        
+        
+
+
 
     # output:
         # transed_img
@@ -23,11 +44,36 @@ class BuildDataset(torch.utils.data.Dataset):
         # TODO: __getitem__
 
         # check flag
-        assert transed_img.shape == (3, 800, 1088)
-        assert transed_bbox.shape[0] == transed_mask.shape[0]
-        return transed_img, label, transed_mask, transed_bbox
+        # print(self.images.shape)
+        img = self.images[index]
+
+    
+        tensor = torch.tensor(img)
+        
+        if tensor.dtype != torch.float32:
+            tensor = tensor.float()
+
+        tensor = F.interpolate(tensor.unsqueeze(0), size=(800, 1066), mode='bilinear', align_corners=False).squeeze(0)
+
+        tensor = transforms.functional.normalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # print(tensor.shape)
+ 
+        
+        tensor = F.pad(tensor, (11, 11, 0, 0), "constant", 0)
+
+        
+
+        # print(tensor.shape)
+        assert tensor.get_shape().as_list() == (3, 800, 1088)
+
+        assert self.bboxes[0].shape == self.masks[0].shape
+        
+        return tensor, self.labels[index], self.masks[index], self.bboxes[index]
+    
+    
     def __len__(self):
-        return len(self.imgs_data)
+        return len(self.images)
+    
 
     # This function take care of the pre-process of img,mask,bbox
     # in the input mini-batch
@@ -50,6 +96,11 @@ class BuildDataLoader(torch.utils.data.DataLoader):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.num_workers = num_workers
+        
+        # Initialize the DataLoader with the custom collect function
+        self.dataloader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=self.shuffle,
+                                     num_workers=self.num_workers, collate_fn=self.collect_fn)
+
 
     # output:
         # img: (bz, 3, 800, 1088)
@@ -58,10 +109,22 @@ class BuildDataLoader(torch.utils.data.DataLoader):
         # transed_bbox_list: list, len:bz, each (n_obj, 4)
         # img: (bz, 3, 300, 400)
     def collect_fn(self, batch):
-        # TODO: collect_fn
+        transed_img_list = []
+        label_list = []
+        transed_mask_list = []
+        transed_bbox_list = []
+        
+        for transed_img, label, transed_mask, transed_bbox in batch:
+            transed_img_list.append(transed_img)
+            label_list.append(label)
+            transed_mask_list.append(transed_mask)
+            transed_bbox_list.append(transed_bbox)
+            
+        return torch.stack(transed_img_list, dim=0), label_list, transed_mask_list, transed_bbox_list
+
 
     def loader(self):
-        # TODO: return a dataloader
+        return self.dataloader
 
 ## Visualize debugging
 if __name__ == '__main__':
