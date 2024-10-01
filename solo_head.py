@@ -67,12 +67,84 @@ class SOLOHead(nn.Module):
         self.cate_head = nn.ModuleList()
         self.ins_head = nn.ModuleList()
 
-        pass
+        # initialize each layer of the category head
+        for i in range(self.stacked_convs):
+            in_channels = self.in_channels if i == 0 else self.seg_feat_channels
+            self.cate_head.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels=in_channels, out_channels=self.seg_feat_channels, 
+                              kernel_size=3, stride=1, padding=1,bias=False),
+                    nn.GroupNorm(num_groups=num_groups, num_channels=self.seg_feat_channels),
+                    nn.ReLU(inplace=True)
+                )
+            )
+
+        # category branch output layer
+        self.cate_out = nn.Sequential(
+            nn.Conv2d(in_channels=self.seg_feat_channels, out_channels=self.cate_out_channels,  
+                kernel_size=3, stride=1, padding=1, bias=True),
+            nn.Sigmoid()
+        )
+
+        # initialize each layer of the instance head
+        for i in range(self.stacked_convs):
+            in_channels = self.in_channels + 2 if i == 0 else self.seg_feat_channels
+            self.ins_head.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels=in_channels, out_channels=self.seg_feat_channels,
+                        kernel_size=3, stride=1, padding=1, bias=False),
+                    nn.GroupNorm(num_groups=num_groups, num_channels=self.seg_feat_channels),
+                    nn.ReLU(inplace=True)
+                )
+            )
+
+        # mask branch output layers (one for each FPN level)
+        self.ins_out_list = nn.ModuleList()
+        for seg_num_grid in self.seg_num_grids:
+            self.ins_out_list.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels=self.seg_feat_channels, out_channels=seg_num_grid ** 2, 
+                        kernel_size=1, stride=1, padding=0, bias=True),
+                    nn.Sigmoid()
+                )
+            )
 
     # This function initialize weights for head network
     def _init_weights(self):
-        ## TODO: initialize the weights
-        pass
+        #initialize weights for category branch
+        for m in self.cate_head.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.GroupNorm):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # initialize weights for the category output layer
+        for m in self.cate_out.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+        # initialize weights for the mask branch
+        for m in self.ins_head.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.GroupNorm):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # initialize weights for the mask output layers
+        for ins_out in self.ins_out_list:
+            for m in ins_out.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.xavier_uniform_(m.weight)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
 
     # Forward function should forward every levels in the FPN.
@@ -91,8 +163,17 @@ class SOLOHead(nn.Module):
                 eval=False):
         new_fpn_list = self.NewFPN(fpn_feat_list)  # stride[8,8,16,32,32]
         assert new_fpn_list[0].shape[1:] == (256,100,136)
+
         quart_shape = [new_fpn_list[0].shape[-2]*2, new_fpn_list[0].shape[-1]*2]  # stride: 4
         # TODO: use MultiApply to compute cate_pred_list, ins_pred_list. Parallel w.r.t. feature level.
+        cate_pred_list, ins_pred_list = self.MultiApply(
+            self.forward_single_level,
+            new_fpn_list,
+            list(range(len(new_fpn_list))),
+            eval=eval,
+            upsample_shape=quart_shape
+        )
+
         assert len(new_fpn_list) == len(self.seg_num_grids)
 
         # assert cate_pred_list[1].shape[1] == self.cate_out_channels
@@ -107,8 +188,19 @@ class SOLOHead(nn.Module):
     # Output:
     # new_fpn_list, list, len(FPN), stride[8,8,16,32,32]
     def NewFPN(self, fpn_feat_list):
-        pass
+        new_fpn_list = []
 
+        fpn_p2 = fpn_feat_list[0]
+        fpn_p2_downsampled = F.interpolate(fpn_p2, scale_factor=0.5, mode='bilinear', align_corners=False)
+        new_fpn_list.append(fpn_p2_downsampled)
+
+        new_fpn_list.extend(fpn_feat_list[1:-1])
+
+        fpn_p6 = fpn_feat_list[-1]
+        fpn_p6_upsampled = F.interpolate(fpn_p6, scale_factor=2, mode='bilinear', align_corners=False)
+        new_fpn_list.append(fpn_p6_upsampled)
+
+        return new_fpn_list
 
     # This function forward a single level of fpn_featmap through the network
     # Input:
@@ -125,16 +217,42 @@ class SOLOHead(nn.Module):
         # upsample_shape is used in eval mode
         ## TODO: finish forward function for single level in FPN.
         ## Notice, we distinguish the training and inference.
-        cate_pred = fpn_feat
-        ins_pred = fpn_feat
+ 
         num_grid = self.seg_num_grids[idx]  # current level grid
+
+        # category branch
+        cate_feat = fpn_feat
+        for layer in self.cate_head:
+            cate_feat = layer(cate_feat)
+        # resize to S x S
+        cate_feat = F.interpolate(cate_feat, size=(num_grid, num_grid), mode='bilinear', align_corners=False)
+        cate_pred = self.cate_out(cate_feat)  # shape: (bz, C-1, S, S)
+
+        # mask branch
+        batch_size, _, h, w = fpn_feat.size()
+        # generate coordinate feature maps
+        y_range = torch.linspace(-1, 1, steps=h, device=fpn_feat.device)
+        x_range = torch.linspace(-1, 1, steps=w, device=fpn_feat.device)
+        y = y_range.view(-1, 1).repeat(1, w)
+        x = x_range.view(1, -1).repeat(h, 1)
+        y = y.expand([batch_size, 1, -1, -1])
+        x = x.expand([batch_size, 1, -1, -1])
+        coord_feat = torch.cat([x, y], 1)
+        # concatenate coordinate features
+        ins_feat = torch.cat([fpn_feat, coord_feat], dim=1)  # shape: (bz, 258, H_feat, W_feat)
+        # process through mask head
+        for layer in self.ins_head:
+            ins_feat = layer(ins_feat)
+        # upsample feature map by factor of 2
+        ins_feat = F.interpolate(ins_feat, scale_factor=2, mode='bilinear', align_corners=False)
+        # output mask predictions
+        ins_pred = self.ins_out_list[idx](ins_feat)  # shape: (bz, S^2, 2H_feat, 2W_feat)
 
         # in inference time, upsample the pred to (ori image size/4)
         if eval == True:
             ## TODO resize ins_pred
-
-            cate_pred = self.points_nms(cate_pred).permute(0,2,3,1)
-
+            ins_pred = F.interpolate(ins_pred, size=upsample_shape, mode='bilinear', align_corners=False)
+            cate_pred = self.points_nms(cate_pred).permute(0,2,3,1) # shape: (bz, S, S, C-1)
         # check flag
         if eval == False:
             assert cate_pred.shape[1:] == (3, num_grid, num_grid)
@@ -219,10 +337,20 @@ class SOLOHead(nn.Module):
         # TODO: use MultiApply to compute ins_gts_list, ins_ind_gts_list, cate_gts_list. Parallel w.r.t. img mini-batch
         # remember, you want to construct target of the same resolution as prediction output in training
 
+        featmap_sizes = [ins_pred.shape[-2:] for ins_pred in ins_pred_list]
+
+        ins_gts_list, ins_ind_gts_list, cate_gts_list = self.MultiApply(
+            self.target_single_img,
+            bbox_list,
+            label_list,
+            mask_list,
+            featmap_sizes=featmap_sizes
+        )
+
         # check flag
-        assert ins_gts_list[0][1].shape = (self.seg_num_grids[1]**2, 200, 272)
-        assert ins_ind_gts_list[0][1].shape = (self.seg_num_grids[1]**2,)
-        assert cate_gts_list[0][1].shape = (self.seg_num_grids[1], self.seg_num_grids[1])
+        assert ins_gts_list[0][1].shape == (self.seg_num_grids[1]**2, 200, 272)
+        assert ins_ind_gts_list[0][1].shape == (self.seg_num_grids[1]**2,)
+        assert cate_gts_list[0][1].shape == (self.seg_num_grids[1], self.seg_num_grids[1])
 
         return ins_gts_list, ins_ind_gts_list, cate_gts_list
     # -----------------------------------
@@ -237,18 +365,112 @@ class SOLOHead(nn.Module):
         # ins_label_list: list, len: len(FPN), (S^2, 2H_feat, 2W_feat)
         # cate_label_list: list, len: len(FPN), (S, S)
         # ins_ind_label_list: list, len: len(FPN), (S^2, )
-    def targer_single_img(self,
+    def target_single_img(self,
                           gt_bboxes_raw,
                           gt_labels_raw,
                           gt_masks_raw,
                           featmap_sizes=None):
         ## TODO: finish single image target build
         # compute the area of every object in this single image
+        num_levels = len(self.seg_num_grids)
 
         # initial the output list, each entry for one featmap
         ins_label_list = []
         ins_ind_label_list = []
         cate_label_list = []
+
+        num_instances = len(gt_labels_raw)
+
+        img_h, img_w = gt_masks_raw[0].shape[-2:]
+
+        #converting lists to tensors
+        gt_bboxes = torch.tensor(gt_bboxes_raw, dtype=torch.float32)
+        gt_labels = torch.tensor(gt_labels_raw, dtype=torch.float32)
+        gt_masks = torch.stack(
+            [torch.tensor(mask, dtype=torch.uint8) for mask in gt_masks_raw], 
+            dim=0
+        )
+
+        x1 = gt_bboxes[:, 0]
+        y1 = gt_bboxes[:, 1]
+        x2 = gt_bboxes[:, 2]
+        y2 = gt_bboxes[:, 3]
+        w = x2 - x1
+        h = y2 - y1
+        areas = w * h
+        instance_scales = torch.sqrt(areas)
+
+        for level_idx in range(num_levels):
+            num_grid = self.seg_num_grids[level_idx]
+            featmap_size = featmap_sizes[level_idx]
+            feat_h, feat_w = featmap_size
+            mask_size = (feat_h, feat_w)
+            min_scale, max_scale = self.scale_ranges[level_idx]
+
+            cate_label = torch.zeros((num_grid, num_grid), dtype=torch.int64)
+            ins_label = torch.zeros((num_grid ** 2, feat_h, feat_w), dtype=torch.uint8)
+            ins_ind_label = torch.zeros((num_grid ** 2,), dtype=torch.uint8)
+
+            # for each instance
+            for idx in range(num_instances):
+                instance_scale = instance_scales[idx]
+                if instance_scale > max_scale or instance_scale < min_scale:
+                    continue
+
+                cur_mask = gt_masks[idx]
+                ys, xs = torch.nonzero(cur_mask, as_tuple=True)
+
+                if len(ys) == 0:
+                    continue
+                
+                cx = xs.float().mean()
+                cy = ys.float().mean()
+
+                # norm center to [0,1]
+                cx_norm = cx / img_w
+                cy_norm = cy / img_h
+
+                grid_x = min(int(torch.floor(cx_norm * num_grid)), num_grid - 1)
+                grid_y = min(int(torch.floor(cy_norm * num_grid)), num_grid - 1)
+
+                grid_x = max(0, grid_x)
+                grid_y = max(0, grid_y)
+
+                bbox_w = w[idx]
+                bbox_h = h[idx]
+
+                half_w = 0.5 * bbox_w * self.epsilon / img_w
+                half_h = 0.5 * bbox_h * self.epsilon / img_h
+
+                top_box = (cy_norm - half_h) * num_grid
+                down_box = (cy_norm + half_h) * num_grid
+                left_box = (cx_norm - half_w) * num_grid
+                right_box = (cx_norm + half_w) * num_grid
+
+                top = max(int(torch.floor(top_box)), 0)
+                down = min(int(torch.ceil(down_box)), num_grid)
+                left = max(int(torch.floor(left_box)), 0)
+                right = min(int(torch.ceil(right_box)), num_grid)
+
+                for i in range(top, bottom + 1):
+                    for j in range(left, right + 1):
+                        cate_label[i,j] = gt_labels[idx]
+                        
+                        k = i * num_grid + j
+                        ins_ind_label[k] = 1
+
+                        cur_mask_resized = F.interpolate(
+                            cur_mask.unsqueeze(0).unsqueeze(0).float(),
+                            size=mask_size,
+                            mode='bilinear',
+                            align_corners=False
+                        ).squeeze(0).squeeze(0)
+
+                        ins_label[k] = cur_mask_resized
+
+            ins_label_list.append(ins_label)
+            ins_ind_label_list.append(ins_ind_label)
+            cate_label_list.append(cate_label)
 
 
         # check flag
@@ -256,6 +478,7 @@ class SOLOHead(nn.Module):
         assert ins_ind_label_list[1].shape == (1296,)
         assert cate_label_list[1].shape == (36, 36)
         return ins_label_list, ins_ind_label_list, cate_label_list
+    
 
     # This function receive pred list from forward and post-process
     # Input:
@@ -321,7 +544,50 @@ class SOLOHead(nn.Module):
                img):
         ## TODO: target image recover, for each image, recover their segmentation in 5 FPN levels.
         ## This is an important visual check flag.
-        pass
+        batch_size = len(ins_gts_list)
+        num_levels = len(self.seg_num_grids)
+
+        for img_idx in range(batch_size):
+            img_np = img[img_idx].permute(1,2,0).cpu().numpy()
+            img_np = (img_np * 255).astype(np.uint8)
+            fig, axes = plt.subplots(1, num_levels + 1, figsize=(15, 5))
+            axes[0].imshow(img_np)
+            axes[0].set_title('Original Image')
+            axes[0].axis('off')
+
+            for level_idx in range(num_levels):
+                num_grid = self.seg_num_grids[level_idx]
+                # Get the category labels and instance masks
+                cate_label = cate_gts_list[img_idx][level_idx].cpu().numpy()
+                ins_label = ins_gts_list[img_idx][level_idx]
+                ins_ind_label = ins_ind_gts_list[img_idx][level_idx]
+
+                # Initialize an empty mask for visualization
+                feat_h, feat_w = ins_label.shape[1], ins_label.shape[2]
+                upsampled_mask = np.zeros((feat_h * 2, feat_w * 2))
+
+                # For each activated grid cell
+                for k in range(num_grid ** 2):
+                    if ins_ind_label[k] == 0:
+                        continue
+                    # Get the resized mask
+                    mask = ins_label[k].cpu().numpy()
+                    # Upsample the mask to match the original image size
+                    mask = cv2.resize(mask, (img_np.shape[1], img_np.shape[0]))
+                    upsampled_mask = np.maximum(upsampled_mask, mask)
+
+                # Apply colormap
+                cmap = plt.get_cmap(color_list[level_idx % len(color_list)])
+                colored_mask = cmap(upsampled_mask)
+                # Overlay on the original image
+                overlay = (0.5 * img_np + 0.5 * (colored_mask[:, :, :3] * 255)).astype(np.uint8)
+
+                axes[level_idx + 1].imshow(overlay)
+                axes[level_idx + 1].set_title(f'FPN Level {level_idx}')
+                axes[level_idx + 1].axis('off')
+
+            plt.show()
+
 
     # This function plot the inference segmentation in img
     # Input:
