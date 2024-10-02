@@ -216,22 +216,39 @@ if __name__ == '__main__':
     test_loader = test_build_loader.loader()
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    
+    color_map = {
+        0: 'red',   
+        1: 'blue',  
+        2: 'green', 
+        3: 'yellow'
+    }
 
     for iter, (imgs, labels, masks, bboxes) in enumerate(train_loader):
         imgs = imgs.to(device)
         for i in range(batch_size):
             fig, ax = plt.subplots(1)
             img = imgs[i].cpu().numpy().transpose(1, 2, 0)
+            
             img = img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])  # Unnormalize
-            img = np.clip(img, 0, 1)
+
             ax.imshow(img)
+            
+            label_colors = {
+                0: [1, 0, 0, 0.5],  
+                1: [0, 0, 1, 0.5], 
+                2: [0, 1, 0, 0.5], 
+            }
 
-            # Plot each mask
-            for mask in masks[i]:
+            for label, mask in zip(labels[i], masks[i]):
                 mask = mask.cpu().numpy()
-                ax.imshow(mask, alpha=0.5, cmap='jet')  # Using jet colormap for better visibility
+                color = label_colors.get(label.item(), [1, 1, 1, 0.5])  # Default to white if no color is specified
+                colored_mask = np.zeros((*mask.shape, 4))  # Create an RGBA image based on mask shape
+                for j in range(3):
+                    colored_mask[..., j] = color[j] * mask  # Apply color to RGB channels
+                colored_mask[..., 3] = color[3] * mask  # Apply alpha channel
+                ax.imshow(colored_mask)
 
-            # Plot each bounding box
             for bbox in bboxes[i]:
                 bbox = bbox.cpu().numpy()
                 rect = patches.Rectangle((bbox[0], bbox[1]), bbox[2]-bbox[0], bbox[3]-bbox[1], linewidth=1, edgecolor='r', facecolor='none')
