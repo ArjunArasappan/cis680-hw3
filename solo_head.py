@@ -5,6 +5,7 @@ import numpy as np
 from scipy import ndimage
 from dataset import *
 from functools import partial
+import cv2
 
 class SOLOHead(nn.Module):
     def __init__(self,
@@ -549,44 +550,94 @@ class SOLOHead(nn.Module):
 
         for img_idx in range(batch_size):
             img_np = img[img_idx].permute(1,2,0).cpu().numpy()
-            img_np = (img_np * 255).astype(np.uint8)
-            fig, axes = plt.subplots(1, num_levels + 1, figsize=(15, 5))
+
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            img_np = std * img_np + mean
+
+            img_np = np.clip(img_np, 0, 1)
+            
+            fig, axes = plt.subplots(1, num_levels + 1, figsize=(20, 5))
+            
+            # Display the original image without any alterations
             axes[0].imshow(img_np)
             axes[0].set_title('Original Image')
             axes[0].axis('off')
 
             for level_idx in range(num_levels):
                 num_grid = self.seg_num_grids[level_idx]
-                # Get the category labels and instance masks
                 cate_label = cate_gts_list[img_idx][level_idx].cpu().numpy()
                 ins_label = ins_gts_list[img_idx][level_idx]
                 ins_ind_label = ins_ind_gts_list[img_idx][level_idx]
 
-                # Initialize an empty mask for visualization
                 feat_h, feat_w = ins_label.shape[1], ins_label.shape[2]
-                upsampled_mask = np.zeros((feat_h * 2, feat_w * 2))
+                upsampled_mask = np.zeros((img_np.shape[0], img_np.shape[1]))
 
-                # For each activated grid cell
                 for k in range(num_grid ** 2):
                     if ins_ind_label[k] == 0:
                         continue
-                    # Get the resized mask
                     mask = ins_label[k].cpu().numpy()
-                    # Upsample the mask to match the original image size
                     mask = cv2.resize(mask, (img_np.shape[1], img_np.shape[0]))
                     upsampled_mask = np.maximum(upsampled_mask, mask)
 
-                # Apply colormap
                 cmap = plt.get_cmap(color_list[level_idx % len(color_list)])
                 colored_mask = cmap(upsampled_mask)
-                # Overlay on the original image
-                overlay = (0.5 * img_np + 0.5 * (colored_mask[:, :, :3] * 255)).astype(np.uint8)
+                
+                # Create an overlay of the mask on the original image
+                overlay = img_np.copy()
+                overlay[upsampled_mask > 0] = colored_mask[upsampled_mask > 0, :3]
+                
+                # Blend the overlay with the original image
+                alpha = 0.5
+                blended = (1 - alpha) * img_np + alpha * overlay
 
-                axes[level_idx + 1].imshow(overlay)
+                axes[level_idx + 1].imshow(blended)
                 axes[level_idx + 1].set_title(f'FPN Level {level_idx}')
                 axes[level_idx + 1].axis('off')
 
+            plt.tight_layout()
             plt.show()
+
+
+            # img_np = (img_np * 255).astype(np.uint8)
+            # fig, axes = plt.subplots(1, num_levels + 1, figsize=(15, 5))
+            # axes[0].imshow(img_np)
+            # axes[0].set_title('Original Image')
+            # axes[0].axis('off')
+
+            # for level_idx in range(num_levels):
+            #     num_grid = self.seg_num_grids[level_idx]
+            #     # Get the category labels and instance masks
+            #     cate_label = cate_gts_list[img_idx][level_idx].cpu().numpy()
+            #     ins_label = ins_gts_list[img_idx][level_idx]
+            #     ins_ind_label = ins_ind_gts_list[img_idx][level_idx]
+
+            #     # Initialize an empty mask for visualization
+            #     feat_h, feat_w = ins_label.shape[1], ins_label.shape[2]
+            #     upsampled_mask = np.zeros((img_np.shape[0], img_np.shape[1]))
+
+            #     # For each activated grid cell
+            #     for k in range(num_grid ** 2):
+            #         if ins_ind_label[k] == 0:
+            #             continue
+            #         # Get the resized mask
+            #         mask = ins_label[k].cpu().numpy()
+            #         # Upsample the mask to match the original image size
+            #         mask = cv2.resize(mask, (img_np.shape[1], img_np.shape[0]))
+            #         upsampled_mask = np.maximum(upsampled_mask, mask)
+
+            #     # Apply colormap
+            #     cmap = plt.get_cmap(color_list[level_idx % len(color_list)])
+            #     colored_mask = cmap(upsampled_mask)
+            #     # Overlay on the original image
+                
+            #     overlay = (0.5 * img_np + 0.5 * (colored_mask[:, :, :3] * 255)).astype(np.uint8)
+
+            #     axes[level_idx + 1].imshow(overlay)
+            #     axes[level_idx + 1].set_title(f'FPN Level {level_idx}')
+            #     axes[level_idx + 1].axis('off')
+
+            # plt.show()
 
 
     # This function plot the inference segmentation in img
