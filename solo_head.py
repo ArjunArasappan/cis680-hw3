@@ -542,7 +542,7 @@ class SOLOHead(nn.Module):
                ins_ind_gts_list,
                cate_gts_list,
                color_list,
-               img):
+               img, index):
         ## TODO: target image recover, for each image, recover their segmentation in 5 FPN levels.
         ## This is an important visual check flag.
         batch_size = len(ins_gts_list)
@@ -594,9 +594,14 @@ class SOLOHead(nn.Module):
                 axes[level_idx + 1].imshow(blended)
                 axes[level_idx + 1].set_title(f'FPN Level {level_idx}')
                 axes[level_idx + 1].axis('off')
+                
+            # if img_idx >= 100:
+            #     break
 
             plt.tight_layout()
-            plt.show()
+            
+            plt.savefig(f'./fpn_imgs/fpn_img{index}.png')
+            plt.close()
 
 
             # img_np = (img_np * 255).astype(np.uint8)
@@ -658,12 +663,16 @@ class SOLOHead(nn.Module):
         pass
 
 from backbone import *
-if __name__ == '__main__':
+
+
+def part_a_solo_head():
     # file path and make a list
     imgs_path = './data/hw3_mycocodata_img_comp_zlib.h5'
     masks_path = './data/hw3_mycocodata_mask_comp_zlib.h5'
     labels_path = "./data/hw3_mycocodata_labels_comp_zlib.npy"
     bboxes_path = "./data/hw3_mycocodata_bboxes_comp_zlib.npy"
+    
+    
     paths = [imgs_path, masks_path, labels_path, bboxes_path]
     # load the data into data.Dataset
     dataset = BuildDataset(paths)
@@ -709,5 +718,11 @@ if __name__ == '__main__':
                                                                          label_list,
                                                                          mask_list)
         mask_color_list = ["jet", "ocean", "Spectral"]
-        solo_head.PlotGT(ins_gts_list,ins_ind_gts_list,cate_gts_list,mask_color_list,img)
+        solo_head.PlotGT(ins_gts_list,ins_ind_gts_list,cate_gts_list,mask_color_list,img, iter)
+        
+        if iter >= 10:
+            break
 
+
+if __name__ == '__main__':
+    part_a_solo_head()

@@ -18,11 +18,11 @@ class BuildDataset(torch.utils.data.Dataset):
         
         # Loading the data
         with h5py.File(img_path, 'r') as file:
-            self.images = file[list(file.keys())[0]][:10]
+            self.images = file[list(file.keys())[0]][:100]
         with h5py.File(mask_path, 'r') as file:
-            self.masks = file[list(file.keys())[0]][:20]
-        self.labels = np.load(label_path, allow_pickle=True)[:10].astype(np.ndarray) 
-        self.bboxes = np.load(bbox_path, allow_pickle=True)[:10].astype(np.ndarray) 
+            self.masks = file[list(file.keys())[0]][:300]
+        self.labels = np.load(label_path, allow_pickle=True)[:100].astype(np.ndarray) 
+        self.bboxes = np.load(bbox_path, allow_pickle=True)[:100].astype(np.ndarray) 
         
         # self.labels = torch.from_numpy(self.labels)
         # self.bboxes = torch.from_numpy(self.bboxes)
@@ -54,7 +54,7 @@ class BuildDataset(torch.utils.data.Dataset):
         
         # self.labels = torch.from_numpy(self.labels)
             
-        print(self.grouped_masks.shape, self.images.shape, self.labels.shape, self.bboxes.shape)
+        # print(self.grouped_masks.shape, self.images.shape, self.labels.shape, self.bboxes.shape)
         
     def transform_img(self, img, is_img = False, is_bbox = False):
         tensor = torch.tensor(img)
@@ -108,7 +108,7 @@ class BuildDataset(torch.utils.data.Dataset):
 
         
 
-        print(list(transed_img.shape))
+        # print(list(transed_img.shape))
         assert list(transed_img.shape) == [3, 800, 1088]
         
         assert bbox.shape[0] == transed_mask.shape[0]
@@ -184,7 +184,7 @@ class BuildDataLoader(torch.utils.data.DataLoader):
             
         transed_img_list = torch.stack(transed_img_list, dim=0)
         
-        print(transed_img_list[0].shape, label_list[0].shape, transed_mask_list[0].shape, transed_bbox_list[0].shape)
+        # print(transed_img_list[0].shape, label_list[0].shape, transed_mask_list[0].shape, transed_bbox_list[0].shape)
         
         return transed_img_list, label_list, transed_mask_list, transed_bbox_list
 
@@ -192,8 +192,7 @@ class BuildDataLoader(torch.utils.data.DataLoader):
     def loader(self):
         return self.dataloader
 
-
-if __name__ == '__main__':
+def part_a_dataset():
     # Paths and dataset loading
     imgs_path = './data/hw3_mycocodata_img_comp_zlib.h5'
     masks_path = './data/hw3_mycocodata_mask_comp_zlib.h5'
@@ -255,10 +254,13 @@ if __name__ == '__main__':
                 ax.add_patch(rect)
 
             plt.axis('off')
-            plt.savefig(f"./testfigs/visualtrainset_batch{iter}_img{i}.png")
-            plt.show()
+            plt.savefig(f"./dataset_imgs/visualtrainset_batch{iter}_img{i}.png")
+            # plt.show()
+            plt.close()
 
         if iter == 10:
             break
 
 
+if __name__ == '__main__':
+    part_a_dataset()
