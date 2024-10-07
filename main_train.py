@@ -18,10 +18,10 @@ def main():
     # ----------------------------
     # Paths to Data
     # ----------------------------
-    imgs_path = './data/hw3_mycocodata_img_comp_zlib.h5'
-    masks_path = './data/hw3_mycocodata_mask_comp_zlib.h5'
-    labels_path = "./data/hw3_mycocodata_labels_comp_zlib.npy"
-    bboxes_path = "./data/hw3_mycocodata_bboxes_comp_zlib.npy"
+    imgs_path = '/content/hw3_mycocodata_img_comp_zlib.h5'
+    masks_path = '/content/hw3_mycocodata_mask_comp_zlib.h5'
+    labels_path = "/content/hw3_mycocodata_labels_comp_zlib.npy"
+    bboxes_path = "/content/hw3_mycocodata_bboxes_comp_zlib.npy"
     paths = [imgs_path, masks_path, labels_path, bboxes_path]
 
     # ----------------------------
@@ -44,7 +44,7 @@ def main():
 
     # dataloaders init
     batch_size = 2
-    num_workers = 4 
+    num_workers = 2
     train_build_loader = BuildDataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     train_loader = train_build_loader.loader()
     test_build_loader = BuildDataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)

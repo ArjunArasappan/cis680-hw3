@@ -57,7 +57,12 @@ class BuildDataset(torch.utils.data.Dataset):
         # print(self.grouped_masks.shape, self.images.shape, self.labels.shape, self.bboxes.shape)
         
     def transform_img(self, img, is_img = False, is_bbox = False):
-        tensor = torch.tensor(img)
+        if isinstance(img, np.ndarray):
+            tensor = torch.from_numpy(img)
+        elif isinstance(img, torch.Tensor):
+            tensor = img.clone().detach()
+        else:
+            raise TypeError("Input img must be a NumPy array or a torch.Tensor")
         
 
         

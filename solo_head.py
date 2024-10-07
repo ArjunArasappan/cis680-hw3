@@ -320,13 +320,15 @@ class SOLOHead(nn.Module):
                     continue
                 pos_inds.append(pos_ind)
                 pos_ins_preds.append(ins_pred_level[b][pos_ind])
-                pos_ins_gts.append(ins_gt_level[b][pos_ind])
+                
+                pos_ins_gts.append(ins_gt_level[b][pos_ind].to(device))
 
             if len(pos_ins_preds) == 0:
                 continue
 
             ins_preds.append(torch.cat(pos_ins_preds, dim=0))
             ins_gts.append(torch.cat(pos_ins_gts, dim=0))
+            
 
         # Compute mask loss using DiceLoss
         mask_losses = []
@@ -380,6 +382,7 @@ class SOLOHead(nn.Module):
     # Output: dice_loss, scalar
     def DiceLoss(self, mask_pred, mask_gt):
         ## TODO: compute DiceLoss
+        mask_gt = mask_gt.to(mask_pred.device)
         # Flatten the tensors
         mask_pred = mask_pred.contiguous().view(-1)
         mask_gt = mask_gt.contiguous().view(-1)
@@ -477,6 +480,15 @@ class SOLOHead(nn.Module):
         assert ins_ind_gts_list[0][1].shape == (self.seg_num_grids[1]**2,)
         assert cate_gts_list[0][1].shape == (self.seg_num_grids[1], self.seg_num_grids[1])
 
+        device = next(self.parameters()).device
+
+        # Move ground truth tensors to the correct device
+        for b in range(len(ins_gts_list)):
+            for l in range(len(ins_gts_list[b])):
+                ins_gts_list[b][l] = ins_gts_list[b][l].to(device)
+                ins_ind_gts_list[b][l] = ins_ind_gts_list[b][l].to(device)
+                cate_gts_list[b][l] = cate_gts_list[b][l].to(device)
+
         return ins_gts_list, ins_ind_gts_list, cate_gts_list
     # -----------------------------------
     ## process single image in one batch
@@ -509,10 +521,10 @@ class SOLOHead(nn.Module):
         img_h, img_w = gt_masks_raw[0].shape[-2:]
 
         #converting lists to tensors
-        gt_bboxes = torch.tensor(gt_bboxes_raw, dtype=torch.float32)
-        gt_labels = torch.tensor(gt_labels_raw, dtype=torch.float32)
+        gt_bboxes = gt_bboxes_raw.clone().detach().float()
+        gt_labels = gt_labels_raw.clone().detach().float()
         gt_masks = torch.stack(
-            [torch.tensor(mask, dtype=torch.uint8) for mask in gt_masks_raw], 
+            [mask.clone().detach().to(torch.uint8) for mask in gt_masks_raw],
             dim=0
         )
 
