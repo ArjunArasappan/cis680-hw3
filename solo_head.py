@@ -290,8 +290,86 @@ class SOLOHead(nn.Module):
              ins_gts_list,
              ins_ind_gts_list,
              cate_gts_list):
-        ## TODO: compute loss, vecterize this part will help a lot. To avoid potential ill-conditioning, if necessary, add a very small number to denominator for focalloss and diceloss computation.
-        pass
+        ## TODO: compute loss, vecterize this part will help a lot. To avoid potential ill-conditioning, 
+        # if necessary, add a very small number to denominator for focalloss and diceloss computation.
+        device = cate_pred_list[0].device
+        num_classes = self.cate_out_channels
+
+        # ----------------------------
+        # Process mask predictions and ground truths
+        # ----------------------------
+        # Uniform the expression for ins_gts & ins_preds
+        # ins_gts: list, len(fpn), (total_positive, 2H_feat, 2W_feat)
+        # ins_preds: list, len(fpn), (total_positive, 2H_feat, 2W_feat)
+        ins_gts = []
+        ins_preds = []
+
+        for level_idx in range(len(ins_pred_list)):
+            ins_pred_level = ins_pred_list[level_idx]
+            ins_ind_level = [ins_ind_gts_list[b][level_idx] for b in range(len(ins_ind_gts_list))]
+            ins_gt_level = [ins_gts_list[b][level_idx] for b in range(len(ins_gts_list))]
+
+            # Collect positive samples across the batch
+            pos_inds = []
+            pos_ins_preds = []
+            pos_ins_gts = []
+
+            for b in range(len(ins_ind_level)):
+                pos_ind = ins_ind_level[b].nonzero(as_tuple=False).squeeze(1)
+                if pos_ind.numel() == 0:
+                    continue
+                pos_inds.append(pos_ind)
+                pos_ins_preds.append(ins_pred_level[b][pos_ind])
+                pos_ins_gts.append(ins_gt_level[b][pos_ind])
+
+            if len(pos_ins_preds) == 0:
+                continue
+
+            ins_preds.append(torch.cat(pos_ins_preds, dim=0))
+            ins_gts.append(torch.cat(pos_ins_gts, dim=0))
+
+        # Compute mask loss using DiceLoss
+        mask_losses = []
+        for pred_masks, gt_masks in zip(ins_preds, ins_gts):
+            if pred_masks.size(0) == 0:
+                continue
+            for mask_pred, mask_gt in zip(pred_masks, gt_masks):
+                loss = self.DiceLoss(mask_pred, mask_gt)
+                mask_losses.append(loss)
+        if len(mask_losses) > 0:
+            mask_loss = torch.stack(mask_losses).mean()
+        else:
+            mask_loss = torch.tensor(0.0, device=device)
+
+        # ----------------------------
+        # Process category predictions and ground truths
+        # ----------------------------
+        # Uniform the expression for cate_gts & cate_preds
+        # cate_gts: (total_entries,)
+        # cate_preds: (total_entries, C-1)
+        cate_gts = []
+        cate_preds = []
+
+        for level_idx in range(len(cate_pred_list)):
+            cate_pred_level = cate_pred_list[level_idx]
+            cate_pred_level = cate_pred_level.permute(0, 2, 3, 1).reshape(-1, num_classes)
+            cate_preds.append(cate_pred_level)
+
+            cate_gt_level = [cate_gts_list[b][level_idx].flatten() for b in range(len(cate_gts_list))]
+            cate_gts.append(torch.cat(cate_gt_level))
+
+        cate_preds = torch.cat(cate_preds, dim=0)
+        cate_gts = torch.cat(cate_gts, dim=0).to(device)
+
+        # Compute category loss using FocalLoss
+        cate_loss = self.FocalLoss(cate_preds, cate_gts)
+
+        # ----------------------------
+        # Total loss
+        # ----------------------------
+        total_loss = cate_loss + 3 * mask_loss
+
+        return cate_loss, mask_loss, total_loss
 
 
 
@@ -302,7 +380,16 @@ class SOLOHead(nn.Module):
     # Output: dice_loss, scalar
     def DiceLoss(self, mask_pred, mask_gt):
         ## TODO: compute DiceLoss
-        pass
+        # Flatten the tensors
+        mask_pred = mask_pred.contiguous().view(-1)
+        mask_gt = mask_gt.contiguous().view(-1)
+
+        # Compute Dice coefficient
+        intersection = 2 * torch.sum(mask_pred * mask_gt)
+        union = torch.sum(mask_pred ** 2) + torch.sum(mask_gt ** 2) + 1e-5  # Add epsilon to avoid division by zero
+
+        dice_loss = 1 - (intersection / union)
+        return dice_loss
 
     # This function compute the cate loss
     # Input:
@@ -310,8 +397,45 @@ class SOLOHead(nn.Module):
         # cate_gts: (num_entry,)
     # Output: focal_loss, scalar
     def FocalLoss(self, cate_preds, cate_gts):
+        alpha = 0.25
+        gamma = 2.0
         ## TODO: compute focalloss
-        pass
+        device = cate_preds.device
+        num_classes = self.cate_out_channels
+
+        # Prepare ground truth labels
+        # cate_gts contains values in {0,1,2,3}, where 0 is background
+        # Adjust labels to be in range {0, ..., C-1}
+        valid_mask = (cate_gts >= 0)
+        cate_preds = cate_preds[valid_mask]
+        cate_gts = cate_gts[valid_mask]
+
+        if cate_preds.numel() == 0:
+            return torch.tensor(0.0, device=device)
+
+        # Create one-hot encoding for labels (background class is 0)
+        cate_labels = torch.zeros_like(cate_preds, device=device)
+        fg_mask = (cate_gts > 0)
+        if fg_mask.sum() > 0:
+            idx = cate_gts[fg_mask] - 1  # Shift class indices to start from 0
+            cate_labels[fg_mask, idx.long()] = 1
+
+        # Compute sigmoid of predictions
+        pred_sigmoid = cate_preds.sigmoid()
+
+        # Compute pt and focal weight
+        pt = torch.where(cate_labels == 1, pred_sigmoid, 1 - pred_sigmoid)
+        alpha_t = torch.where(cate_labels == 1, alpha, 1 - alpha)
+        focal_weight = alpha_t * ((1 - pt) ** gamma)
+
+        # Compute binary cross entropy loss
+        bce_loss = F.binary_cross_entropy_with_logits(cate_preds, cate_labels, reduction='none')
+
+        # Compute final loss
+        loss = focal_weight * bce_loss
+        loss = loss.sum() / cate_preds.size(0)
+
+        return loss
 
     def MultiApply(self, func, *args, **kwargs):
         pfunc = partial(func, **kwargs) if kwargs else func
@@ -497,7 +621,45 @@ class SOLOHead(nn.Module):
                     ori_size):
 
         ## TODO: finish PostProcess
-        pass
+        # Initialize output lists
+        NMS_sorted_scores_list = []
+        NMS_sorted_cate_label_list = []
+        NMS_sorted_ins_list = []
+
+        batch_size = ins_pred_list[0].size(0)
+
+        for img_idx in range(batch_size):
+            # Collect per-image predictions from all levels
+            ins_pred_img_list = []
+            cate_pred_img_list = []
+
+            for level_idx in range(len(self.seg_num_grids)):
+                ins_pred_level = ins_pred_list[level_idx]
+                cate_pred_level = cate_pred_list[level_idx]
+
+                ins_pred_img_level = ins_pred_level[img_idx]  # Shape: (S^2, ori_H/4, ori_W/4)
+                cate_pred_img_level = cate_pred_level[img_idx]  # Shape: (S, S, C-1)
+
+                # Reshape cate_pred_img_level to (S^2, C-1)
+                S = cate_pred_img_level.size(0)
+                cate_pred_img_level = cate_pred_img_level.view(-1, self.cate_out_channels)
+
+                ins_pred_img_list.append(ins_pred_img_level)
+                cate_pred_img_list.append(cate_pred_img_level)
+
+            # Concatenate predictions from all levels
+            ins_pred_img = torch.cat(ins_pred_img_list, dim=0)  # Shape: (sum(S^2), ori_H/4, ori_W/4)
+            cate_pred_img = torch.cat(cate_pred_img_list, dim=0)  # Shape: (sum(S^2), C-1)
+
+            # Process single image
+            NMS_sorted_scores, NMS_sorted_cate_labels, NMS_sorted_ins = self.PostProcessImg(
+                ins_pred_img, cate_pred_img, ori_size)
+
+            NMS_sorted_scores_list.append(NMS_sorted_scores)
+            NMS_sorted_cate_label_list.append(NMS_sorted_cate_labels)
+            NMS_sorted_ins_list.append(NMS_sorted_ins)
+
+        return NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list
 
 
     # This function Postprocess on single img
@@ -514,7 +676,84 @@ class SOLOHead(nn.Module):
                        ori_size):
 
         ## TODO: PostProcess on single image.
-        pass
+        # Get parameters from postprocess config
+        cate_thresh = self.postprocess_cfg['cate_thresh']
+        pre_NMS_num = self.postprocess_cfg['pre_NMS_num']
+        keep_instance = self.postprocess_cfg['keep_instance']
+        ins_thresh = self.postprocess_cfg['ins_thresh']
+
+        ori_H, ori_W = ori_size
+
+        # Compute the scores and labels
+        # For each grid, get the max score and its category label
+        scores, cate_labels = torch.max(cate_pred_img, dim=1)  # Shape: (sum(S^2),)
+
+        # Filter out low-confidence predictions
+        keep_inds = (scores > cate_thresh)
+        scores = scores[keep_inds]
+        cate_labels = cate_labels[keep_inds]
+        ins_pred_img = ins_pred_img[keep_inds]  # Shape: (n_keep, ori_H/4, ori_W/4)
+
+        if scores.numel() == 0:
+            return [], [], []
+
+        # If number of predictions is larger than pre_NMS_num, keep top pre_NMS_num
+        if scores.numel() > pre_NMS_num:
+            topk_inds = scores.topk(pre_NMS_num)[1]
+            scores = scores[topk_inds]
+            cate_labels = cate_labels[topk_inds]
+            ins_pred_img = ins_pred_img[topk_inds]
+
+        # Binarize the masks
+        masks = (ins_pred_img > ins_thresh).float()
+
+        # Compute mask areas
+        mask_areas = masks.sum(dim=(1, 2))
+
+        # Filter out masks with very small area
+        keep_inds = mask_areas > 0
+        scores = scores[keep_inds]
+        cate_labels = cate_labels[keep_inds]
+        masks = masks[keep_inds]
+
+        if scores.numel() == 0:
+            return [], [], []
+
+        # Apply Matrix NMS
+        decay_scores = self.MatrixNMS(masks, scores)
+
+        # Multiply decay_scores with original scores
+        scores = scores * decay_scores
+
+        # Filter out masks with zero score
+        keep_inds = scores > 0
+        scores = scores[keep_inds]
+        cate_labels = cate_labels[keep_inds]
+        masks = masks[keep_inds]
+
+        if scores.numel() == 0:
+            return [], [], []
+
+        # Sort the scores
+        scores, sort_inds = torch.sort(scores, descending=True)
+        masks = masks[sort_inds]
+        cate_labels = cate_labels[sort_inds]
+
+        # Keep top K instances
+        if scores.numel() > keep_instance:
+            scores = scores[:keep_instance]
+            masks = masks[:keep_instance]
+            cate_labels = cate_labels[:keep_instance]
+
+        # Resize masks to original image size
+        N = masks.size(0)
+        masks = F.interpolate(masks.unsqueeze(1), size=(ori_H, ori_W), mode='bilinear', align_corners=False)
+        masks = masks.squeeze(1)
+
+        # Binarize masks again after interpolation
+        masks = (masks > 0.5).float()
+
+        return scores.tolist(), cate_labels.tolist(), masks.cpu().numpy()
 
     # This function perform matrix NMS
     # Input:
@@ -524,7 +763,46 @@ class SOLOHead(nn.Module):
         # decay_scores: (n_act,)
     def MatrixNMS(self, sorted_ins, sorted_scores, method='gauss', gauss_sigma=0.5):
         ## TODO: finish MatrixNMS
-        pass
+        n_samples = sorted_scores.size(0)
+        if n_samples == 0:
+            return []
+
+        # Flatten masks
+        masks = sorted_ins.view(n_samples, -1).float()  # Shape: (n_samples, h*w)
+
+        # Compute pairwise IoU
+        inter_matrix = torch.mm(masks, masks.t())  # Intersection areas
+        areas = masks.sum(dim=1).unsqueeze(1)  # Areas of masks
+        union_matrix = areas + areas.t() - inter_matrix + 1e-5  # Union areas
+        iou_matrix = inter_matrix / union_matrix  # IoU matrix
+
+        # Duplicate scores
+        scores = sorted_scores.view(-1, 1)
+        scores_t = scores.t()
+
+        # Only consider lower scored masks
+        # For each mask, compare with masks that have higher scores
+        lower_mask = scores_t > scores
+
+        # Initialize decay matrix
+        decay_matrix = torch.ones_like(iou_matrix)
+
+        # Compute decay factors
+        if method == 'gauss':
+            decay = torch.exp(-1 * (iou_matrix ** 2) / gauss_sigma)
+        else:
+            decay = (1 - iou_matrix) / (1 - iou_matrix.max(dim=0, keepdim=True)[0] + 1e-5)
+
+        # Apply decay only for lower scored masks
+        decay_matrix = torch.where(lower_mask, decay, decay_matrix)
+
+        # For each mask, compute the cumulative decay
+        decay_factors = decay_matrix.min(dim=0)[0]
+
+        # Ensure decay factors are between 0 and 1
+        decay_factors = decay_factors.clamp(min=0.0, max=1.0)
+
+        return decay_factors
 
     # -----------------------------------
     ## The following code is for visualization
@@ -660,7 +938,72 @@ class SOLOHead(nn.Module):
                   img,
                   iter_ind):
         ## TODO: Plot predictions
-        pass
+        batch_size = len(NMS_sorted_scores_list)
+
+        for img_idx in range(batch_size):
+            img_np = img[img_idx].permute(1, 2, 0).cpu().numpy()  # Convert to (H, W, 3)
+            ori_H, ori_W, _ = img_np.shape
+
+            # Denormalize the image if necessary
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            img_np = std * img_np + mean
+            img_np = np.clip(img_np, 0, 1)
+
+            # Get the masks, scores, and labels for this image
+            scores = NMS_sorted_scores_list[img_idx]
+            cate_labels = NMS_sorted_cate_label_list[img_idx]
+            masks = NMS_sorted_ins_list[img_idx]  # Shape: (keep_instance, ori_H, ori_W)
+
+            # Apply the hard threshold to the masks
+            masks = (masks >= 0.5).astype(np.uint8)
+
+            # Set a threshold for the NMS score to select instance segmentation
+            score_thresh = 0.5
+            keep_inds = [i for i, s in enumerate(scores) if s >= score_thresh]
+
+            if len(keep_inds) == 0:
+                print(f"No instances to display for image {img_idx} in iteration {iter_ind}")
+                continue
+
+            scores = [scores[i] for i in keep_inds]
+            cate_labels = [cate_labels[i] for i in keep_inds]
+            masks = masks[keep_inds]  # Shape: (n_instances, ori_H, ori_W)
+
+            # Create a figure and axis
+            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+            ax.imshow(img_np)
+            ax.axis('off')
+
+            # Overlay masks
+            img_overlay = img_np.copy()
+            for i, mask in enumerate(masks):
+                color = plt.get_cmap(color_list[cate_labels[i] % len(color_list)])(0.5)
+                mask_bool = mask.astype(bool)
+
+                # Create colored mask
+                color_mask = np.zeros_like(img_np)
+                color_mask[mask_bool] = color[:3]
+
+                # Blend the mask with the image
+                img_overlay[mask_bool] = img_overlay[mask_bool] * 0.5 + color_mask[mask_bool] * 0.5
+
+                # Optionally, you can add boundaries or contours
+                contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(img_overlay, contours, -1, color[:3], 2)
+
+                # Add class label and score
+                y_coords, x_coords = np.where(mask_bool)
+                if y_coords.size > 0 and x_coords.size > 0:
+                    y_min, x_min = y_coords.min(), x_coords.min()
+                    ax.text(x_min, y_min - 5, f'Class {cate_labels[i]+1}: {scores[i]:.2f}', color='white',
+                            fontsize=8, bbox=dict(facecolor='black', alpha=0.5))
+
+            # Show the final image
+            ax.imshow(img_overlay)
+            plt.tight_layout()
+            plt.savefig(f'./infer_imgs/infer_img_{iter_ind}_{img_idx}.png')
+            plt.close()
 
 from backbone import *
 
