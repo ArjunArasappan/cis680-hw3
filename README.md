@@ -6,3 +6,5 @@ This difference between an object different levels of the FPN feature pyramid is
 test `solo_head.py` and `dataset.py` by running the `main.py` script. 
 
 colab training: https://colab.research.google.com/drive/11hfi9txNYtI5g8juv4Ef7zOIP82FJ3MT?usp=sharing
+
+can just run main_infer.py in vscode
