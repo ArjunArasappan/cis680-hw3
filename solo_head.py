@@ -23,11 +23,11 @@ class SOLOHead(nn.Module):
                  cate_loss_cfg=dict(gamma=2,
                                 alpha=0.25,
                                 weight=1),
-                 postprocess_cfg=dict(cate_thresh=0.2,
-                                      ins_thresh=0.5,
+                 postprocess_cfg=dict(cate_thresh=0.005,
+                                      ins_thresh=0.2,
                                       pre_NMS_num=50,
                                       keep_instance=5,
-                                      IoU_thresh=0.5)):
+                                      IoU_thresh=0.2)):
         super(SOLOHead, self).__init__()
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
@@ -663,6 +663,8 @@ class SOLOHead(nn.Module):
             ins_pred_img = torch.cat(ins_pred_img_list, dim=0)  # Shape: (sum(S^2), ori_H/4, ori_W/4)
             cate_pred_img = torch.cat(cate_pred_img_list, dim=0)  # Shape: (sum(S^2), C-1)
 
+            print(f"POSTPROCESS preactual process: ins_pred_img shape: {ins_pred_img.shape}, cate_pred_img shape: {cate_pred_img.shape}")
+
             # Process single image
             NMS_sorted_scores, NMS_sorted_cate_labels, NMS_sorted_ins = self.PostProcessImg(
                 ins_pred_img, cate_pred_img, ori_size)
@@ -700,6 +702,9 @@ class SOLOHead(nn.Module):
         # For each grid, get the max score and its category label
         scores, cate_labels = torch.max(cate_pred_img, dim=1)  # Shape: (sum(S^2),)
 
+        # print example score
+        print(f"POSTPROCESS actual process: example score: {scores[0]}")
+
         # Filter out low-confidence predictions
         keep_inds = (scores > cate_thresh)
         scores = scores[keep_inds]
@@ -727,6 +732,9 @@ class SOLOHead(nn.Module):
         scores = scores[keep_inds]
         cate_labels = cate_labels[keep_inds]
         masks = masks[keep_inds]
+
+        #see length of remaining masks
+        print(f"POSTPROCESS actual process: length of remaining masks: {len(masks)}")
 
         if scores.numel() == 0:
             return [], [], []
@@ -957,21 +965,31 @@ class SOLOHead(nn.Module):
             ori_H, ori_W, _ = img_np.shape
 
             # Denormalize the image if necessary
-            mean = np.array([0.485, 0.456, 0.406])
-            std = np.array([0.229, 0.224, 0.225])
-            img_np = std * img_np + mean
-            img_np = np.clip(img_np, 0, 1)
+            # mean = np.array([0.485, 0.456, 0.406])
+            # std = np.array([0.229, 0.224, 0.225])
+            # img_np = std * img_np + mean
+            # img_np = np.clip(img_np, 0, 1)
 
             # Get the masks, scores, and labels for this image
             scores = NMS_sorted_scores_list[img_idx]
             cate_labels = NMS_sorted_cate_label_list[img_idx]
-            masks = NMS_sorted_ins_list[img_idx]  # Shape: (keep_instance, ori_H, ori_W)
+            masks = NMS_sorted_ins_list[img_idx]  # Should be a numpy array or list of arrays
+
+            print(f"len scores: {len(scores)}, len masks: {len(masks)}, len cate_labels: {len(cate_labels)}")
+            # **Handle the case where no instances are detected**
+            if len(scores) == 0 or len(masks) == 0:
+                print(f"No instances to display for image {img_idx} in iteration {iter_ind}")
+                continue
+
+            # **Convert masks to a numpy array if it's not already**
+            masks = np.array(masks)
 
             # Apply the hard threshold to the masks
             masks = (masks >= 0.5).astype(np.uint8)
 
             # Set a threshold for the NMS score to select instance segmentation
-            score_thresh = 0.5
+            score_thresh = 0.05
+            print(f"scores: {scores}")
             keep_inds = [i for i, s in enumerate(scores) if s >= score_thresh]
 
             if len(keep_inds) == 0:
