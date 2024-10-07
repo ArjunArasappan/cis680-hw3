@@ -1,3 +1,4 @@
 data/
 venv/
-.venv/checkpoints/checkpoint_epoch_36.pth
+.venv/
+checkpoints/
