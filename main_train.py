@@ -12,7 +12,7 @@ def main():
     # ----------------------------
     # Device Configuration
     # ----------------------------
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # ----------------------------
@@ -44,7 +44,7 @@ def main():
 
     # dataloaders init
     batch_size = 2
-    num_workers = 2
+    num_workers = 2 
     train_build_loader = BuildDataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     train_loader = train_build_loader.loader()
     test_build_loader = BuildDataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
