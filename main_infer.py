@@ -23,7 +23,7 @@ def main():
     masks_path = './data/hw3_mycocodata_mask_comp_zlib.h5'
     labels_path = "./data/hw3_mycocodata_labels_comp_zlib.npy"
     bboxes_path = "./data/hw3_mycocodata_bboxes_comp_zlib.npy"
-    checkpoint_path = './checkpoints/checkpoint_epoch_36.pth'  # Replace with your checkpoint path
+    checkpoint_path = './checkpoints/checkpoint_epoch_99.pth'  
     paths = [imgs_path, masks_path, labels_path, bboxes_path]
 
     # ----------------------------
@@ -40,7 +40,7 @@ def main():
     train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
 
     # DataLoader parameters
-    batch_size = 1  # Set batch size to 1 for inference
+    batch_size = 1  # batch size to 1 for inference
     num_workers = 2  # Adjust based on your system
 
     # Build DataLoader for test set
