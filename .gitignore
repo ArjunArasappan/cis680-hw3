@@ -2,3 +2,5 @@ data/
 venv/
 .venv/
 checkpoints/
+__pycache__/
+.DS_Store
