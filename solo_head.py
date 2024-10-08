@@ -81,10 +81,13 @@ class SOLOHead(nn.Module):
             )
 
         # category branch output layer
-        self.cate_out = nn.Sequential(
-            nn.Conv2d(in_channels=self.seg_feat_channels, out_channels=self.cate_out_channels,  
-                kernel_size=3, stride=1, padding=1, bias=True),
-            nn.Sigmoid()
+        self.cate_out = nn.Conv2d(
+            in_channels=self.seg_feat_channels,
+            out_channels=self.cate_out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=True
         )
 
         # initialize each layer of the instance head
@@ -402,13 +405,10 @@ class SOLOHead(nn.Module):
     def FocalLoss(self, cate_preds, cate_gts):
         alpha = 0.25
         gamma = 2.0
-        ## TODO: compute focalloss
         device = cate_preds.device
         num_classes = self.cate_out_channels
 
         # Prepare ground truth labels
-        # cate_gts contains values in {0,1,2,3}, where 0 is background
-        # Adjust labels to be in range {0, ..., C-1}
         valid_mask = (cate_gts >= 0)
         cate_preds = cate_preds[valid_mask]
         cate_gts = cate_gts[valid_mask]
@@ -416,23 +416,20 @@ class SOLOHead(nn.Module):
         if cate_preds.numel() == 0:
             return torch.tensor(0.0, device=device)
 
-        # Create one-hot encoding for labels (background class is 0)
+        # Create one-hot encoding for labels
         cate_labels = torch.zeros_like(cate_preds, device=device)
         fg_mask = (cate_gts > 0)
-        if fg_mask.sum() > 0:
-            idx = cate_gts[fg_mask] - 1  # Shift class indices to start from 0
-            cate_labels[fg_mask, idx.long()] = 1
+        fg_inds = fg_mask.nonzero(as_tuple=False).squeeze(1)
+        if fg_inds.numel() > 0:
+            cate_labels[fg_inds, (cate_gts[fg_inds] - 1).long()] = 1
 
-        # Compute sigmoid of predictions
-        pred_sigmoid = cate_preds.sigmoid()
-
-        # Compute pt and focal weight
-        pt = torch.where(cate_labels == 1, pred_sigmoid, 1 - pred_sigmoid)
-        alpha_t = torch.where(cate_labels == 1, alpha, 1 - alpha)
-        focal_weight = alpha_t * ((1 - pt) ** gamma)
-
-        # Compute binary cross entropy loss
+        # Compute binary cross entropy loss with logits
         bce_loss = F.binary_cross_entropy_with_logits(cate_preds, cate_labels, reduction='none')
+
+        # Compute focal loss components
+        pred_sigmoid = cate_preds.sigmoid()
+        pt = pred_sigmoid * cate_labels + (1 - pred_sigmoid) * (1 - cate_labels)
+        focal_weight = (alpha * cate_labels + (1 - alpha) * (1 - cate_labels)) * ((1 - pt) ** gamma)
 
         # Compute final loss
         loss = focal_weight * bce_loss
