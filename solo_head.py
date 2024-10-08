@@ -23,11 +23,11 @@ class SOLOHead(nn.Module):
                  cate_loss_cfg=dict(gamma=2,
                                 alpha=0.25,
                                 weight=1),
-                 postprocess_cfg=dict(cate_thresh=0.005,
-                                      ins_thresh=0.2,
+                 postprocess_cfg=dict(cate_thresh=0.5,
+                                      ins_thresh=0.5,
                                       pre_NMS_num=50,
-                                      keep_instance=5,
-                                      IoU_thresh=0.2)):
+                                      keep_instance=10,
+                                      IoU_thresh=0.5)):
         super(SOLOHead, self).__init__()
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
@@ -685,7 +685,6 @@ class SOLOHead(nn.Module):
                        ins_pred_img,
                        cate_pred_img,
                        ori_size):
-
         ## TODO: PostProcess on single image.
         # Get parameters from postprocess config
         cate_thresh = self.postprocess_cfg['cate_thresh']
@@ -695,6 +694,10 @@ class SOLOHead(nn.Module):
 
         ori_H, ori_W = ori_size
 
+        # Compute the scores and labels
+        # Apply Sigmoid to category predictions to get probabilities
+        cate_pred_img = cate_pred_img.sigmoid()
+        
         # Compute the scores and labels
         # For each grid, get the max score and its category label
         scores, cate_labels = torch.max(cate_pred_img, dim=1)  # Shape: (sum(S^2),)
@@ -966,10 +969,10 @@ class SOLOHead(nn.Module):
             ori_H, ori_W, _ = img_np.shape
 
             # Denormalize the image if necessary
-            # mean = np.array([0.485, 0.456, 0.406])
-            # std = np.array([0.229, 0.224, 0.225])
-            # img_np = std * img_np + mean
-            # img_np = np.clip(img_np, 0, 1)
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            img_np = std * img_np + mean
+            img_np = np.clip(img_np, 0, 1)
 
             # Get the masks, scores, and labels for this image
             scores = NMS_sorted_scores_list[img_idx]
