@@ -751,6 +751,8 @@ class SOLOHead(nn.Module):
         cate_labels = cate_labels[keep_inds]
         masks = masks[keep_inds]
 
+        print(f"POSTPROCESS actual process: length of remaining masks after matrix NMS: {len(masks)}")
+
         if scores.numel() == 0:
             return [], [], []
 
@@ -772,6 +774,8 @@ class SOLOHead(nn.Module):
 
         # Binarize masks again after interpolation
         masks = (masks > 0.5).float()
+
+        print(f"POSTPROCESS actual process: length of remaining masks after top K: {len(masks)}")
 
         return scores.tolist(), cate_labels.tolist(), masks.cpu().numpy()
 
@@ -988,7 +992,7 @@ class SOLOHead(nn.Module):
             masks = (masks >= 0.5).astype(np.uint8)
 
             # Set a threshold for the NMS score to select instance segmentation
-            score_thresh = 0.05
+            score_thresh = 0.005
             print(f"scores: {scores}")
             keep_inds = [i for i, s in enumerate(scores) if s >= score_thresh]
 
